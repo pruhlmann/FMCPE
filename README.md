@@ -197,11 +197,11 @@ python make_plots.py \
 
 To add your own task you have to : 
 - Create a `my_task.py` file in `simulator/` follwing one of the existing task as template.
-- Create a `configs/task/my_task.yaml` with task specific parameters (follow of the existing configs structure)
+- Create a `configs/task/my_task.yaml` with task specific parameters (follow one of the existing configs structure)
 - Add your task in `simulator/__init__.py`
 - Create the necessary embedding nets in `utils/networks.py` and add it in `get_embedding_network` line 853.
 
-**Note : Rescaling is handled internally with the nf and fm models, but it is strongly encouraged to already return standardized data in the simulator (check the light tunnel task) and set rescal=none in the configs**
+**Note : Rescaling is handled internally with the nf and fm models, but it is strongly encouraged to already return standardized data in the simulator (check the light tunnel task) and set rescale=none in the configs**
 
 ## Citation
 
