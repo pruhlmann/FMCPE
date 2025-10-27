@@ -1,0 +1,146 @@
+name: "wind_tunnel"
+num_samples: 50000
+rescale: "none" # in simulator
+generation: "independent"
+num_cal: [10,50,200,1000]
+max_cal: 5000
+naugment: 1
+
+simulator:
+  name: "wind_tunnel"
+  params:
+    theta_dim: 1
+    obs_dim: 50
+    data_path: "data/wind_tunnel"
+    exp_name: "load_out_0.5_osr_downwind_4"
+
+
+hidden_dims_x: [32, 64, 128, 256,256, 128, 64, 32]
+hidden_dims_theta: [32, 64, 128, 256, 128, 64, 32]
+
+### METHODS ###
+fm_post_transform:
+  config:
+    npe: "npe"
+    flow_x:
+      space: "data"
+      conditional: True
+      probability_path: "ot2"
+      prior: 'uniform'
+      base_dist: 'data_eps'
+      params:
+        probability_path_params: {"sigma_min": 1e-4}
+        # prior_params: {"rate": 2.0}
+        base_dist_params: {"eps": 0.5}
+        # base_dist_params: {}
+        drift:
+          # architecture: 'resmlp'
+          architecture: "cfnet"
+          posterior_kwargs:
+            input_dim: ${task.simulator.params.obs_dim}
+            dropout: 0.0
+            batch_norm: True
+            context_dim: 10
+            theta_with_glu: True
+            context_with_glu: False
+            activation: "gelu"
+            hidden_dims: ${task.hidden_dims_x}
+          theta_embedding_kwargs:
+            name: "conv1d_light"
+            time_emdedding: True
+            output_dim: 10 # same as context_dim
+            image_size: ${task.simulator.params.obs_dim}
+            n_freqs: 3
+          embedding_kwargs:
+            name: "conv1d_light"
+            output_dim: 10 # same as context_dim
+            image_size: ${task.simulator.params.obs_dim}
+    flow_theta:
+      space: "data"
+      conditional: True
+      probability_path: "ot2"
+      prior: 'uniform'
+      base_dist: 'gaussian'
+      params:
+        probability_path_params: {"sigma_min": 1e-4}
+        # prior_params: {"rate": 2.0}
+        base_dist_params: {}
+        drift:
+          # architecture: 'resmlp'
+          architecture: "cfnet"
+          posterior_kwargs:
+            input_dim: ${task.simulator.params.theta_dim}
+            dropout: 0.0
+            batch_norm: False
+            context_dim: 10
+            theta_with_glu: True
+            context_with_glu: False
+            activation: "gelu"
+            hidden_dims: ${task.hidden_dims_theta}
+          embedding_kwargs:
+            name: "conv1d_light"
+            output_dim: 10 # same as context_dim
+            image_size: ${task.simulator.params.obs_dim}
+  training_params:
+    rescale: ${task.rescale}
+    lr: 1e-3
+    epochs: 200
+    batch_size: 100
+    max_patience: 10
+    train_size: 0.8
+### BASELINES ####
+
+npe:
+  training:
+    lr: 1e-4
+    batch_size: 256
+    epochs: 2000
+    train_size: 0.8
+    max_patience: 20
+    rescale: ${task.rescale}
+  params:
+    embedding_net:
+      model_path: 'models'
+      load: False
+      save: 'last_'
+      output_dim: 10
+      image_size: ${task.simulator.params.obs_dim}
+    npe_params:
+      embedding_dim: 10
+      ntransform: 1
+
+fmpe:
+  config:
+    space: "data"
+    conditional: True
+    probability_path: "ot2"
+    prior: 'uniform'
+    base_dist: 'gaussian'
+    params:
+      probability_path_params: {"sigma_min": 1e-4}
+      # prior_params: {"rate": 2.0}
+      base_dist_params: {}
+      drift:
+        # architecture: 'resmlp'
+        architecture: "cfnet"
+        posterior_kwargs:
+          input_dim: ${task.simulator.params.theta_dim}
+          dropout: 0.0
+          batch_norm: False
+          context_dim: 10
+          theta_with_glu: True
+          context_with_glu: False
+          activation: "gelu"
+          hidden_dims: ${task.hidden_dims_theta}
+        embedding_kwargs:
+          name: "conv1d_light"
+          output_dim: 10 # same as context_dim
+          image_size: ${task.simulator.params.obs_dim}
+  training_params:
+    rescale: ${task.rescale}
+    lr: 1e-3
+    epochs: 200
+    batch_size: 256
+    max_patience: 10
+    train_size: 0.8
+

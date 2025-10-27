@@ -1,0 +1,119 @@
+name: "high_dim_gaussian"
+num_samples: 50000
+rescale: "z_score"
+generation: "independent"
+num_cal: [10,50,200,1000]
+max_cal: 100000000
+use_sbi: False
+naugment: 1
+
+simulator:
+  name: "pure_gaussian"
+  params:
+    theta_dim: 3
+    obs_dim: 10
+    prior_var_scale: 1
+    likelihood_var_scale: 1
+    noisy_var_scale: 0.1
+    seed: 0
+npe:
+  training:
+    lr: 1e-4
+    batch_size: 512
+    epochs: 2000
+    train_size: 0.8
+    max_patience: 20
+    rescale: ${task.rescale}
+  density_estimator: 'nsf'
+  params:
+    embedding_net: {}
+    npe_params:
+      transforms: 5
+      hidden_features: [64,64]
+      bins: 8
+
+# Methods config, to add a new one,
+# use a new name and fill in the mandatory
+# fields + add extra
+
+fm_post_transform:
+  config:
+    npe: "npe"
+    flow_theta:
+      space: "data"
+      conditional: True
+      probability_path: "ot2"
+      prior: 'power'
+      base_dist: 'gaussian'
+      params:
+        probability_path_params: {}
+        prior_params: {"rate": 2.0}
+        base_dist_params: {}
+        drift:
+          # architecture: 'resmlp'
+          architecture: "resmlp"
+          hidden_dim: [64,64,64,64,64]
+          mlp_params: {}
+    flow_x:
+      space: "data"
+      conditional: True
+      probability_path: "ot2"
+      prior: 'power'
+      base_dist: 'gaussian'
+      params:
+        probability_path_params: {}
+        prior_params: {"rate": 2.0}
+        base_dist_params: {}
+        drift:
+          # architecture: 'resmlp'
+          architecture: "resmlp"
+          hidden_dim: [64,64,64,64,64]
+          mlp_params: {}
+  training_params:
+    lr: 1e-3
+    epochs: 200
+    batch_size: 256
+    max_patience: 10
+    train_size: 0.8
+    rescale: ${task.rescale}
+
+# Baselines, do not change
+
+dpe:
+  training:
+    lr: 1e-4
+    batch_size: 512
+    epochs: 2000
+    train_size: 0.8
+    rescale: ${task.rescale}
+  density_estimator: 'nsf'
+  params:
+    embedding_net: {}
+    npe_params:
+      transforms: 5
+      hidden_features: [64,64]
+      bins: 8
+
+fmpe:
+  config:
+    space: "data"
+    conditional: True
+    probability_path: "ot2"
+    prior: 'power'
+    base_dist: 'gaussian'
+    params:
+      probability_path_params: {}
+      prior_params: {"rate": 2.0}
+      base_dist_params: {}
+      drift:
+        # architecture: 'resmlp'
+        architecture: "resmlp"
+        hidden_dim: [64,64,64,64,64]
+        mlp_params: {}
+  training_params:
+    rescale: ${task.rescale}
+    lr: 1e-3
+    epochs: 200
+    batch_size: 256
+    max_patience: 10
+    train_size: 0.8

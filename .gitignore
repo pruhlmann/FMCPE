@@ -205,3 +205,19 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# Project-specific
+logs/
+figures/
+data/
+models/
+results/
+sbi-logs/
+*.pth
+*.pt
+*.zip
+*.mp4
+*.pdf
+.exrsync
+.claude/
+.virtual_documents/

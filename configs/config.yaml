@@ -1,0 +1,14 @@
+defaults:
+  - task: gaussian
+  - _self_
+
+# exp_name: "adaptive_s_t"
+exp_name: "task_by_ncal_seeded"
+model_path: 'models'
+load_models: False
+load_data: False
+train_baselines: True
+methods_to_train: ["fm_post_transform"]
+compute_reference: False
+
+seed: 0
