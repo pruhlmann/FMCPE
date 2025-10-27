@@ -193,7 +193,6 @@ python main.py \
 # 2. Compute metrics
 python analysis.py \
     --logdir=logs/demo \
-    --task high_dim_gaussian \
     --c2st \
     --wasserstein \
     --num_test=100
@@ -209,18 +208,13 @@ python make_plots.py \
 If you use this code in your research, please cite:
 
 ```bibtex
-@article{fmcpe2024,
-  title={Flow Matching Corrected Posterior Estimation},
-  author={Your Authors},
-  journal={Your Journal},
-  year={2024}
+@misc{ruhlmann2025flowmatchingrobustsimulationbased,
+      title={Flow Matching for Robust Simulation-Based Inference under Model Misspecification}, 
+      author={Pierre-Louis Ruhlmann and Pedro L. C. Rodrigues and Michael Arbel and Florence Forbes},
+      year={2025},
+      eprint={2509.23385},
+      archivePrefix={arXiv},
+      primaryClass={stat.ML},
+      url={https://arxiv.org/abs/2509.23385}, 
 }
 ```
-
-## License
-
-[Add your license information here]
-
-## Contact
-
-For questions or issues, please open an issue on GitHub.
