@@ -49,19 +49,10 @@ The codebase provides several benchmark tasks for evaluating posterior estimatio
 To run a simple experiment:
 
 ```bash
-# Train simulation-based models (NPE, FMPE)
-python main.py task=high_dim_gaussian \
-    task.num_samples=1000 \
-    task.num_cal=[10,50,100] \
-    methods_to_train=[fm_post_transform] \
-    seed=0 \
-    +mlxp.logger.parent_log_dir=logs/experiment
-
 # Train baseline methods
 python main.py task=high_dim_gaussian \
     task.num_samples=1000 \
     task.num_cal=[10,50,100] \
-    methods_to_train=[fm_post_transform] \
     train_baselines=True \
     seed=0 \
     +mlxp.logger.parent_log_dir=logs/experiment
@@ -73,10 +64,9 @@ Key parameters you can configure:
 - `task`: The inference task to use (`high_dim_gaussian`, `pendulum`, etc.)
 - `task.num_samples`: Number of simulation samples for training
 - `task.num_cal`: List of calibration sample sizes to evaluate
-- `methods_to_train`: List of methods to train (e.g., `fm_post_transform`, `fmpe`)
 - `seed`: Random seed for reproducibility
 - `train_baselines`: Whether to train baseline methods (DPE, NPE)
-- `compute_reference`: Whether to compute reference posteriors
+- `compute_reference`: Whether to compute reference posteriors with max ncal
 
 ### Analysis
 
@@ -86,15 +76,16 @@ After training, compute evaluation metrics:
 python analysis.py \
     --logdir=logs/experiment \
     --task high_dim_gaussian \
+    --metrics seeded # or 'ncal' if only one seed
     --c2st \
     --wasserstein \
     --num_test=100
 ```
 
 Available metrics:
-- `--c2st`: Classifier Two-Sample Test
+- `--c2st`: Classifier Two-Sample Test on the joint (theta,x)
 - `--wasserstein`: Wasserstein distance
-- `--kl`: KL divergence (when ground truth available)
+- `--mse`: Mean Squarred Error avregaged over observations
 - `--num_test`: Number of test samples to use
 
 ### Visualization
@@ -120,7 +111,6 @@ python main.py \
     task.num_samples=1000 \
     task.num_cal=[10,50,100,500] \
     seed=[0,1,2,3,4] \
-    methods_to_train=[fm_post_transform] \
     +mlxp.logger.parent_log_dir=logs/multi_run
 ```
 
@@ -155,8 +145,6 @@ Each task configuration contains:
 
 The codebase implements several methods:
 - `fm_post_transform`: Flow Matching Posterior Transform (FMCPE)
-- `fmpe`: Flow Matching Posterior Estimation
-- `npe`: Neural Posterior Estimation (baseline)
 - `dpe`: Direct Posterior Estimation (baseline)
 - `mf_npe`: Mean-field NPE (baseline)
 
@@ -183,9 +171,8 @@ Here's a complete workflow from training to visualization:
 # 1. Train models
 python main.py \
     task=high_dim_gaussian \
-    task.num_samples=1000 \
-    task.num_cal=[10,50,100] \
-    methods_to_train=[fm_post_transform] \
+    task.num_samples=50000 \
+    task.num_cal=[10,50,200,1000] \
     train_baselines=True \
     seed=0 \
     +mlxp.logger.parent_log_dir=logs/demo
@@ -193,15 +180,28 @@ python main.py \
 # 2. Compute metrics
 python analysis.py \
     --logdir=logs/demo \
+    --metrcics seeded
+    --recompute_baselines
+    --recompute_method
     --c2st \
     --wasserstein \
-    --num_test=100
+    --num_test=2000
 
 # 3. Generate plots
 python make_plots.py \
     --log_dir logs/demo \
     --save_root figures/demo/
 ```
+
+## Adding a new task
+
+To add your own task you have to : 
+- Create a `my_task.py` file in `simulator/` follwing one of the existing task as template.
+- Create a `configs/task/my_task.yaml` with task specific parameters (follow of the existing configs structure)
+- Add your task in `simulator/__init__.py`
+- Create the necessary embedding nets in `utils/networks.py` and add it in `get_embedding_network` line 853.
+
+**Note : Rescaling is handled internally with the nf and fm models, but it is strongly encouraged to already return standardized data in the simulator (check the light tunnel task) and set rescal=none in the configs**
 
 ## Citation
 
