@@ -1,6 +1,6 @@
 # FMCPE: Flow Matching Corrected Posterior Estimation
 
-Official implementation of Flow Matching Corrected Posterior Estimation (FMCPE), a method for posterior estimation in simulation-based inference using flow matching techniques.
+Implementation of Flow Matching Corrected Posterior Estimation (FMCPE), a method for posterior estimation in simulation-based inference under model misspecification using flow matching techniques.
 
 ## Installation
 
