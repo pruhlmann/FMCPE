@@ -1,6 +1,8 @@
 lampe==0.9.0
 mlxp==1.0.0
 numpyro==0.18.0
+jax==0.4.25
+jaxlib==0.4.25
 scikit-learn==1.6.1
 scipy==1.12.0
 pyro-ppl==1.9.1
@@ -10,5 +12,6 @@ jupyter
 matplotlib
 tqdm
 pot
-seaborn
 causalchamber
+glasflow
+xarray
