@@ -210,7 +210,7 @@ def build_train_and_test_loaders(
         shuffle=True,
         pin_memory=True,
         num_workers=num_workers,
-        worker_init_fn=fix_random_seeds,
+        worker_init_fn=None,
     )
     test_loader = DataLoader(
         test_dataset,
@@ -218,7 +218,7 @@ def build_train_and_test_loaders(
         shuffle=False,
         pin_memory=True,
         num_workers=num_workers,
-        worker_init_fn=fix_random_seeds,
+        worker_init_fn=None,
     )
 
     return train_loader, test_loader

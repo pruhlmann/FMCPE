@@ -1,10 +1,9 @@
 from pathlib import Path
-from typing import Any, Dict, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 import causalchamber
 import numpy as np
 import pandas as pd
-from sympy.sets.ordinals import omega
 import torch
 from causalchamber.models import simulator_a2_c3, model_a1
 from causalchamber.simulators import Simulator as CausalSimulator
@@ -273,22 +272,24 @@ class WindTunnel(Simulator):
         self,
         theta_dim: int = 1,
         obs_dim: int = 50,  # just y: (time steps,)
-        data_path: str = "data/wind_tunnel",
+        data_dir: str = "/home/pruhlman/data/ropefm",  # Base data directory
         exp_name: str = "load_out_0.5_osr_downwind_4",
+        no_misspecification: bool = False,
     ):
         theta_dim = int(theta_dim)
         obs_dim = int(obs_dim)
         super().__init__(obs_dim=obs_dim, theta_dim=theta_dim, name="wind_tunnel")
 
-        self.data_path = Path(data_path)
+        # Construct data path from data_dir and task name
+        self.data_path = Path(data_dir) / "wind_tunnel"
         self.data_path.mkdir(parents=True, exist_ok=True)
         self.exp_name = exp_name
+        self.no_misspecification = no_misspecification
         self.callable_simulator = True
-        self.callable_dgp = False
+        self.callable_dgp = no_misspecification  # When no misspec, DGP = simulator
         self.supported_generation = ["independent"]
 
         # Download data
-        Path(data_path).mkdir(parents=True, exist_ok=True)
         self.dataset = causalchamber.datasets.Dataset(
             "wt_intake_impulse_v1", download=True, root=self.data_path
         )
@@ -351,7 +352,7 @@ class WindTunnel(Simulator):
             Returns:
                 x: (N, 50) tensor of simulated values
             """
-            if not misspecified:
+            if not misspecified and not self.no_misspecification:
                 raise ValueError("Misspecified must be True for WindTunnel simulator.")
 
             # Repeat theta along time dimension → (N, 50)
@@ -368,34 +369,59 @@ class WindTunnel(Simulator):
 
         return simulator
 
-    def obs_from_files(self, n: int) -> Tuple[torch.Tensor, torch.Tensor]:
+    def get_total_observations(self) -> int:
+        """Get total number of observation series available in dataset."""
+        df = self.experiment.as_pandas_dataframe()
+        return len(df) // 50  # Each observation is a 50-step time series
+
+    def obs_from_files(
+        self, n: int, mode: str = "training", indices: Optional[Tuple[int, ...]] = None
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
-        Load n random observations (theta, y) from dataset.
+        Load n observations (theta, y) from dataset.
         Each observation is a time series of length 50.
 
         Args:
             n: number of samples
+            mode: "training" or "testing" (deprecated, use indices instead)
+            indices: Explicit indices to load. These are observation indices (0 to total_obs-1),
+                    not row indices. Each observation index i corresponds to rows [i*50, (i+1)*50).
+                    If provided, mode is ignored.
+
         Returns:
             theta: (n, 1)
             y:     (n, 50)
         """
-        # All valid starting indices (aligned with 50-step blocks)
         df = self.experiment.as_pandas_dataframe()
-        valid_indices = torch.arange(0, len(df), 50)
-        if n > len(valid_indices):
-            raise ValueError(f"Requested {n} series but only {len(valid_indices)} available.")
+        total_obs = len(df) // 50  # Number of 50-step observation series
 
-        # Randomly choose n indices using torch (respects torch.manual_seed)
-        perm = torch.randperm(len(valid_indices))[:n]
-        chosen_indices = valid_indices[perm].tolist()
+        if n > total_obs:
+            raise ValueError(f"Requested {n} series but only {total_obs} available.")
 
+        if indices is not None:
+            # Use explicit indices
+            if len(indices) != n:
+                raise ValueError(f"indices length ({len(indices)}) must match n ({n})")
+            chosen_obs_indices = list(indices)
+        else:
+            # Fallback to old behavior (not recommended - use DataSplitter instead)
+            import warnings
+            warnings.warn(
+                "obs_from_files called without explicit indices. "
+                "Use DataSplitter for reproducible train/test splits.",
+                DeprecationWarning,
+            )
+            chosen_obs_indices = list(range(n))
+
+        # Convert observation indices to row indices and load data
         y_series, theta_vals = [], []
-        for i in chosen_indices:
-            block = df.iloc[i : i + 50]
+        for obs_idx in chosen_obs_indices:
+            row_start = obs_idx * 50
+            block = df.iloc[row_start : row_start + 50]
             y_block = torch.tensor(block["pressure_downwind"].values, dtype=torch.float32)
             theta_val = torch.tensor(block["hatch"].iloc[0], dtype=torch.float32)
-            start = y_block[0]
-            y_block = y_block - start
+            # Normalize: subtract first value
+            y_block = y_block - y_block[0]
 
             y_series.append(y_block)
             theta_vals.append(theta_val)

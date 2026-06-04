@@ -283,6 +283,29 @@ class ConvNN1D(nn.Module):
         return x
 
 
+class ImageSummaryStats(nn.Module):
+    """Non-learnable summary statistics for image data.
+
+    Reduces [batch, C, H, W] to a compact feature vector by combining:
+    - Spatially pooled features via AdaptiveAvgPool2d -> C * pool_size^2
+    - Per-channel mean and std -> 2 * C
+
+    For [3, 64, 64] with pool_size=4: 48 + 6 = 54 features.
+    """
+
+    def __init__(self, pool_size: int = 4):
+        super().__init__()
+        self.pool = nn.AdaptiveAvgPool2d(pool_size)
+        self.pool_size = pool_size
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """x: [batch, C, H, W] -> [batch, C * pool_size^2 + 2 * C]"""
+        pooled = self.pool(x).flatten(1)  # [batch, C * pool_size^2]
+        mean = x.mean(dim=(2, 3))  # [batch, C]
+        std = x.std(dim=(2, 3))  # [batch, C]
+        return torch.cat([pooled, mean, std], dim=1)
+
+
 class ConvNN2DLT(nn.Module):
     def __init__(self, output_dim: int = 20, image_size: Tuple[int, int, int] = (3, 64, 64)):
         super(ConvNN2DLT, self).__init__()
@@ -479,6 +502,14 @@ class ResMLP(nn.Module):
         blocks = blocks[:-1]
         self.blocks = nn.ModuleList(blocks)
 
+        # Zero-init the final output layer so the initial velocity field is zero,
+        # making the ODE an identity map at initialization.
+        for block in reversed(self.blocks):
+            if isinstance(block, nn.Linear):
+                nn.init.zeros_(block.weight)
+                nn.init.zeros_(block.bias)
+                break
+
         self.in_features = in_features
         self.out_features = out_features
 
@@ -500,6 +531,107 @@ class ResMLP(nn.Module):
         """
         xt, t, cond = inputs
         x = torch.cat((xt, t, cond), dim=1)
+        for block in self.blocks:
+            x = block(x)
+        return x
+
+
+class TimeEmbeddedResMLP(nn.Module):
+    r"""Creates a residual MLP with sinusoidal time embeddings.
+
+    This variant of ResMLP applies positional (sinusoidal) encoding to the time
+    input before concatenating with other features. This provides better time
+    conditioning, especially near t=0 and t=1 boundaries where standard linear
+    time encoding may have difficulty.
+
+    The time embedding uses sinusoidal functions at multiple frequencies,
+    similar to transformer positional encodings, which helps the network
+    learn smooth interpolations across the full time range.
+
+    Arguments:
+        in_features: The number of input features (xt + cond dimensions).
+        out_features: The number of output features.
+        hidden_features: The numbers of hidden features.
+        n_freqs: Number of frequencies for sinusoidal time embedding (default: 8).
+        kwargs: Keyword arguments passed to the underlying MLP blocks.
+
+    Example:
+        >>> net = TimeEmbeddedResMLP(64, 5, [128, 128], n_freqs=8)
+        >>> xt = torch.randn(32, 5)
+        >>> t = torch.rand(32, 1)
+        >>> cond = torch.randn(32, 59)
+        >>> out = net((xt, t, cond))  # shape: (32, 5)
+    """
+
+    def __init__(
+        self,
+        in_features: int,
+        out_features: int,
+        hidden_features: Sequence[int] = (64, 64),
+        n_freqs: int = 8,
+        **kwargs,
+    ):
+        super(TimeEmbeddedResMLP, self).__init__()
+
+        # Time embedding: t (1 dim) -> 1 + 2*n_freqs dims via sinusoidal encoding
+        self.time_embed = PositionalEncoding(nr_frequencies=n_freqs)
+        time_embed_dim = 1 + 2 * n_freqs  # Original t + sin + cos terms
+
+        # Total input dimension: xt + time_embedding + cond
+        # Original in_features = xt_dim + 1 (time) + cond_dim
+        # New input = xt_dim + time_embed_dim + cond_dim
+        # So we add (time_embed_dim - 1) extra dimensions
+        adjusted_in_features = in_features + (time_embed_dim - 1)
+
+        blocks = []
+        for before, after in zip(
+            (adjusted_in_features, *hidden_features),
+            (*hidden_features, out_features),
+        ):
+            if after != before:
+                blocks.append(nn.Linear(before, after))
+            blocks.append(Residual(MLP(after, after, [after], **kwargs)))
+
+        blocks = blocks[:-1]
+        self.blocks = nn.ModuleList(blocks)
+
+        # Zero-init the final output layer so the initial velocity field is zero,
+        # making the ODE an identity map at initialization.
+        for block in reversed(self.blocks):
+            if isinstance(block, nn.Linear):
+                nn.init.zeros_(block.weight)
+                nn.init.zeros_(block.bias)
+                break
+
+        self.in_features = in_features
+        self.out_features = out_features
+        self.n_freqs = n_freqs
+
+    def forward(self, inputs):
+        """
+        Forward pass through the TimeEmbeddedResMLP.
+
+        Parameters
+        ----------
+        inputs : tuple of (xt, t, cond)
+            xt : torch.Tensor of shape (batch_size, xt_dim)
+            t : torch.Tensor of shape (batch_size, 1)
+            cond : torch.Tensor of shape (batch_size, cond_dim)
+
+        Returns
+        -------
+        torch.Tensor
+            Output tensor of shape (batch_size, out_features).
+        """
+        xt, t, cond = inputs
+
+        # Apply sinusoidal embedding to time
+        # time_embed expects shape (batch, 1) and returns (batch, 1 + 2*n_freqs)
+        t_embedded = self.time_embed(t)
+
+        # Concatenate: xt + embedded_time + cond
+        x = torch.cat((xt, t_embedded, cond), dim=1)
+
         for block in self.blocks:
             x = block(x)
         return x
@@ -579,6 +711,10 @@ class DenseResidualNet(nn.Module):
             ]
             + [nn.Linear(self.hidden_dims[-1], self.output_dim.numel())]
         )
+        # Zero-init the final output layer so the initial velocity field is zero,
+        # making the ODE an identity map at initialization.
+        nn.init.zeros_(self.resize_layers[-1].weight)
+        nn.init.zeros_(self.resize_layers[-1].bias)
 
     def forward(self, x, context=None):
         """
@@ -851,15 +987,17 @@ def get_theta_embedding_net(name: str, **embedding_kwargs):
 
 
 def get_embedding_network(name: str, **kwargs) -> nn.Module:
-    if name in ["pendulum", "conv1d"]:
+    if name in ["pendulum", "no_misspec_pendulum", "conv1d"]:
         return ConvNN1D(output_dim=kwargs["output_dim"])
     if name in ["conv1d_v2"]:
         return ConvNN1DLight_v2(
             output_dim=kwargs["output_dim"], input_len=kwargs.get("input_len", 50)
         )
-    elif name in ["wind_tunnel", "conv1d_light"]:
+    elif name in ["wind_tunnel", "no_misspec_wind_tunnel", "conv1d_light"]:
         return ConvNN1DLight(output_dim=kwargs["output_dim"])
     elif name in ["light_tunnel", "conv2d"]:
         return ConvNN2DLT(output_dim=kwargs["output_dim"], image_size=kwargs["image_size"])
+    elif name == "summary_stats":
+        return ImageSummaryStats(pool_size=kwargs.get("pool_size", 4))
     else:
         return nn.Identity()

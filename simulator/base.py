@@ -75,12 +75,19 @@ class Simulator:
         pass
 
     @abstractmethod
-    def obs_from_files(self, n: int) -> Tuple[Tensor, Tensor]:
+    def obs_from_files(
+        self, n: int, mode: str = "training", indices: Optional[Tuple[int, ...]] = None
+    ) -> Tuple[Tensor, Tensor]:
         """Load the observations from files.
+
         Args:
-            n: Number of samples to generate
+            n: Number of samples to load
+            mode: "training" or "testing" (deprecated, use indices instead)
+            indices: Explicit indices to load. If provided, mode is ignored.
+                    Should be a tuple/array of integer indices into the dataset.
+
         Returns:
-            Tuple of prior samples and observations
+            Tuple of (theta, observations) tensors
         """
         pass
 
@@ -159,25 +166,9 @@ class Simulator:
         pass
 
 
-def rescale(theta, x, y):
-    theta_mean, theta_std = theta.mean(), theta.std()
-    x_mean, x_std = x.mean(), x.std()
-    y_mean, y_std = y.mean(), y.std()
-
-    scales = {
-        "theta_mean": theta_mean,
-        "theta_std": theta_std,
-        "x_mean": x_mean,
-        "x_std": x_std,
-        "y_mean": y_mean,
-        "y_std": y_std,
-    }
-
-    theta = (theta - theta_mean) / theta_std
-    x = (x - x_mean) / x_std
-    y = (y - y_mean) / y_std
-
-    return theta, x, y, scales
+# DEPRECATED: The rescale() function has been removed.
+# Use utils.rescaling.DataRescaler classes instead for proper rescaling.
+# See utils/rescaling.py and RESCALING_REFACTOR.md for details.
 
 
 def generate_simulation_dataset(
@@ -212,6 +203,8 @@ def generate_calibration_dataset(
     simulator: Simulator,
     n: int,
     generation: Optional[str] = "independent",
+    mode: str = "training",
+    indices: Optional[Tuple[int, ...]] = None,
 ) -> Tuple[Tensor, Tensor, Tensor]:
     """Generate a dataset using a given simulator. The dataset consists of
     samples from the prior, the simulator output for the samples from the prior and the real data.
@@ -219,12 +212,14 @@ def generate_calibration_dataset(
     Args:
         simulator: Simulator object
         n: Number of samples to generate
-        rescale: Whether to rescale the data
         generation: Generation method, either "independent" or "transitive"
-        augment: Whether to augment the data
+        mode: "training" or "testing" (deprecated, use indices instead)
+        indices: Explicit indices to load for file-based data. If provided, mode is ignored.
+                For file-based tasks, this determines which samples to load.
+                Length should match n.
 
     Returns:
-        Tuple of prior samples, simulator output and real data and a dictionary of scales
+        Tuple of prior samples (theta), simulator output (x) and real data (y)
     """
 
     assert generation in simulator.supported_generation, (
@@ -233,19 +228,26 @@ def generate_calibration_dataset(
         ". Supported methods: ",
         simulator.supported_generation,
     )
+    assert mode in ["training", "testing"], "Unsupported mode: " + mode
+
+    if indices is not None and len(indices) != n:
+        raise ValueError(f"indices length ({len(indices)}) must match n ({n})")
+
     if generation == "independent":
         if simulator.callable_simulator and simulator.callable_dgp:
+            # Fully generative task - indices don't matter
             theta = simulator.sample_prior(n)
             x = simulator.get_simulator(misspecified=True)(theta)
             y = simulator.get_simulator(misspecified=False)(theta)
         elif simulator.callable_simulator and not simulator.callable_dgp:
-            theta, y = simulator.obs_from_files(n)
+            # File-based observations, simulated x
+            theta, y = simulator.obs_from_files(n, mode, indices)
             x = simulator.get_simulator(misspecified=True)(theta)
         elif not simulator.callable_simulator and simulator.callable_dgp:
             theta, x = simulator.simulations_from_files(n)
             y = simulator.get_simulator(misspecified=False)(theta)
         elif not simulator.callable_simulator and not simulator.callable_dgp:
-            theta, x, y = simulator.obs_from_files(n)
+            theta, x, y = simulator.obs_from_files(n, mode, indices)
     elif generation == "transitive":
         assert simulator.callable_simulator, "Transitive generation requires a callable simulator."
         theta = simulator.sample_prior(n)

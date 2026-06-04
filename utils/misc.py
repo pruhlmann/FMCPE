@@ -13,6 +13,58 @@ from torch.nn.modules import Module
 from torch.utils.data import DataLoader, TensorDataset, random_split
 
 
+import torch.nn as nn
+
+
+class SpikeAndSlabCauchyNoise(nn.Module):
+    """
+    Implements the spike-and-slab error model from Ward et al (2022):
+       with probability (1−rho) you add Gaussian noise (spike),
+       with probability rho you add Cauchy noise (slab).
+    The noise is added to each dimension of the summary vector independently.
+    """
+
+    def __init__(self, rho: float, sigma: float = 0.01, tau: float = 0.25):
+        """
+        Args:
+          rho   : probability of slab (Cauchy) component
+          sigma : std dev of Gaussian (spike) component
+          tau   : scale parameter of Cauchy (slab) component
+        """
+        super().__init__()
+        self.rho = rho
+        self.sigma = sigma
+        self.tau = tau
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Adds noise to x according to the mixture model.
+        Args:
+          x : tensor of shape (batch_size, D) (or more dims where last dim = D)
+        Returns:
+          noisy_x : same shape as x
+        """
+        device = x.device
+        shape = x.shape
+        D = shape[-1]
+
+        # Sample which dims use slab vs spike
+        # mask = 1 means slab (Cauchy), 0 means spike (Gaussian)
+        # Bernoulli per‐dimension
+        mask = torch.bernoulli(torch.full((shape[:-1] + (D,)), self.rho, device=device))
+
+        # Gaussian noise (spike)
+        gaussian_noise = torch.randn_like(x) * self.sigma
+
+        # Cauchy noise (slab): can be generated via torch.tan(pi*(u−0.5))*scale
+        u = torch.rand_like(x)
+        cauchy_noise = self.tau * torch.tan(torch.pi * (u - 0.5))
+
+        # Compose
+        noise = mask * cauchy_noise + (1.0 - mask) * gaussian_noise
+        return x + noise
+
+
 def random_psd(dim: int, scale: float = 1.0, seed: Optional[int] = None) -> torch.Tensor:
     """
     Generates a random symmetric positive semi-definite (PSD) matrix by symmetrizing a random matrix,
@@ -90,32 +142,6 @@ def tensor_to_df(tensor, label, dim_names: Optional[List[str]]) -> pd.DataFrame:
             dict_val[f"dim_{i}"] = tensor[:, i].numpy()
     df = pd.DataFrame(dict_val)
     return df
-
-
-def get_model_path_for_multirun(
-    base_path: Path, exp_name: str, task_cfg: ConfigDict, cfg: ConfigDict
-) -> Path:
-    """
-    Get the model path for a specific task configuration in a multi-run experiment.
-
-    Args:
-        base_path (Path): Base path for the experiment.
-        exp_name (str): Name of the experiment.
-        task_cfg (ConfigDict): Task configuration.
-
-    Return:
-        model_path (Path): Path to the model file.
-    """
-    if exp_name == "task_by_ncal":
-        return base_path / task_cfg["name"]
-    if exp_name == "task_by_ncal_seeded":
-        return base_path / task_cfg["name"] / f"seed_{cfg['seed']}"
-    elif exp_name == "adaptive_s_t":
-        s = task_cfg["simulator"]["params"]["s"]
-        t = task_cfg["simulator"]["params"]["t"]
-        return base_path / f"s_{s}_t_{t}"
-    else:
-        raise ValueError(f"Unknown experiment name: {exp_name}")
 
 
 def get_params(reader: GroupedDataFrame, field: str) -> Dict:

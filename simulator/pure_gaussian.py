@@ -14,13 +14,19 @@ class PureGaussian(Simulator):
         likelihood_var_scale: float = 2.0,
         noisy_var_scale: float = 5.0,
         seed: int = 0,
+        no_misspecification: bool = False,
+        direct_theta_scale: float = 0.0,
     ):
         obs_dim = int(obs_dim)
         theta_dim = int(theta_dim)
         super().__init__(obs_dim=obs_dim, theta_dim=theta_dim, name="pure_gaussian")
         self.callable_simulator = True
         self.callable_dgp = True
-        self.supported_generation = ["independent", "transitive"]
+        # Transitive generation not supported when D≠0 (noisy_process doesn't receive θ)
+        if direct_theta_scale > 0.0:
+            self.supported_generation = ["independent"]
+        else:
+            self.supported_generation = ["independent", "transitive"]
 
         # Prior parameters
         torch.manual_seed(seed)
@@ -53,11 +59,23 @@ class PureGaussian(Simulator):
             loc=mean_likelihood(theta), covariance_matrix=likelihood_cov
         )
 
-        # Noisy process parameters
-        cov_noisy_sqrt = torch.normal(0.0, noisy_var_scale, (obs_dim, obs_dim))
-        C = torch.normal(1.0, 1.0, (obs_dim, obs_dim))
-        d = torch.rand((obs_dim,)) * 5 + 5
-        noise_cov = cov_noisy_sqrt @ cov_noisy_sqrt.T
+        # Noisy process parameters: C=I, d=0, noise≈0 when no_misspecification=True
+        if no_misspecification:
+            C = torch.eye(obs_dim)
+            d = torch.zeros(obs_dim)
+            noise_cov = torch.eye(obs_dim) * 1e-6
+        else:
+            cov_noisy_sqrt = torch.normal(0.0, noisy_var_scale, (obs_dim, obs_dim))
+            C = torch.normal(1.0, 1.0, (obs_dim, obs_dim))
+            d = torch.rand((obs_dim,)) * 5 + 5
+            noise_cov = cov_noisy_sqrt @ cov_noisy_sqrt.T
+
+        # Direct theta -> y influence (breaks conditional independence when nonzero)
+        if direct_theta_scale > 0.0:
+            D = torch.normal(0.0, direct_theta_scale, (obs_dim, theta_dim))
+        else:
+            D = torch.zeros(obs_dim, theta_dim)
+        self.direct_theta_coef = D
 
         def mean_noise(x):
             return x @ C.T + d
@@ -70,6 +88,8 @@ class PureGaussian(Simulator):
         }
 
     def get_simulator(self, misspecified: bool):
+        D = self.direct_theta_coef
+
         def simulator(
             theta: Tensor,
         ) -> Tensor:
@@ -79,8 +99,9 @@ class PureGaussian(Simulator):
             }
             if not misspecified:
                 x = dist.MultivariateNormal(**parameters).sample()
+                mean_y = self.mean_noise(x) + theta @ D.T
                 noise_parameters = {
-                    "loc": self.mean_noise(x),
+                    "loc": mean_y,
                     "covariance_matrix": self.noise_params["covariance_matrix"],
                 }
                 noise = dist.MultivariateNormal(**noise_parameters).sample()
@@ -109,19 +130,25 @@ class PureGaussian(Simulator):
         d = self.noise_params["bias"]
         Sigma_noise = self.noise_params["covariance_matrix"]
 
+        # Direct theta influence
+        D = self.direct_theta_coef
+
+        # With D: y = Cx + Dθ + d + ε_y = (CA+D)θ + Cb + d + Cε_x + ε_y
+        F = C @ A + D  # combined linear map θ -> y
+
         # Mean and covariance of x
         mu_x = A @ mu_theta + b
         Sigma_x = A @ Sigma_theta @ A.T + Sigma_lik
 
-        # Covariance between x and y
-        Sigma_xy = Sigma_x @ C.T
+        # Cov(x, y) = A Σ_θ F^T + Σ_lik C^T
+        Sigma_xy = A @ Sigma_theta @ F.T + Sigma_lik @ C.T
 
-        # Covariance of y
-        Sigma_y = C @ Sigma_x @ C.T + Sigma_noise
+        # Covariance of y = F Σ_θ F^T + C Σ_lik C^T + Σ_noise
+        Sigma_y = F @ Sigma_theta @ F.T + C @ Sigma_lik @ C.T + Sigma_noise
         Sigma_y_inv = torch.linalg.inv(Sigma_y)
 
         # Mean of y
-        mu_y = C @ mu_x + d
+        mu_y = F @ mu_theta + C @ b + d
 
         # Centered y: shape (batch_size, obs_dim)
         y_centered = y - mu_y
@@ -194,8 +221,11 @@ class PureGaussian(Simulator):
         d = self.noise_params["bias"]
         Sigma_noise = self.noise_params["covariance_matrix"]
 
-        # Linear mapping from theta to y
-        F = C @ A
+        # Direct theta influence
+        D = self.direct_theta_coef
+
+        # Linear mapping from theta to y: E[y|theta] = (CA + D)theta + Cb + d
+        F = C @ A + D
         c = C @ b + d
         Sigma_y = C @ Sigma_lik @ C.T + Sigma_noise
 
@@ -239,6 +269,37 @@ class PureGaussian(Simulator):
             return dist.MultivariateNormal(**parameters).sample()
 
         return noisy_process
+
+    def conditional_mutual_information(self) -> float:
+        """Compute I(y; θ | x) analytically.
+
+        When D=0 (no direct theta->y link), this is 0 (conditional independence holds).
+        When D≠0, this measures the information y carries about θ beyond what x provides.
+
+        I(y; θ | x) = 0.5 * log|Σ_{y|x}| - 0.5 * log|Σ_{y|x,θ}|
+
+        where Σ_{y|x,θ} = Σ_noise (since y | x, θ ~ N(Cx + Dθ + d, Σ_noise))
+        and Σ_{y|x} = D Σ_{θ|x} D^T + Σ_noise
+        """
+        D = self.direct_theta_coef
+        Sigma_noise = self.noise_params["covariance_matrix"]
+
+        # Σ_{θ|x} (posterior covariance of θ given x, same for all x in Gaussian case)
+        Sigma_theta = self.prior_params["covariance_matrix"]
+        A = self.simulator_params["coef"]
+        Sigma_lik = self.simulator_params["covariance_matrix"]
+        Sigma_x = A @ Sigma_theta @ A.T + Sigma_lik
+        Sigma_theta_x = Sigma_theta - Sigma_theta @ A.T @ torch.linalg.inv(Sigma_x) @ A @ Sigma_theta
+
+        # Σ_{y|x} = D Σ_{θ|x} D^T + Σ_noise
+        Sigma_y_given_x = D @ Sigma_theta_x @ D.T + Sigma_noise
+
+        # I(y; θ | x) = 0.5 * (log|Σ_{y|x}| - log|Σ_noise|)
+        mi = 0.5 * (
+            torch.linalg.slogdet(Sigma_y_given_x)[1]
+            - torch.linalg.slogdet(Sigma_noise)[1]
+        )
+        return mi.item()
 
     def sample_denoiser(self, num_samples: int, y: Tensor) -> Tensor:
         raise NotImplementedError

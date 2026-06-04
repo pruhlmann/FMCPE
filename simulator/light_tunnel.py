@@ -1,5 +1,10 @@
 from pathlib import Path
-from typing import Any, Dict, Tuple
+from typing import Any, Dict, Optional, Tuple
+
+from utils import causalchamber_offline
+
+causalchamber_offline.enable()
+
 from causalchamber.datasets import ImageExperiment
 import pandas as pd
 import math
@@ -19,7 +24,7 @@ class LightTunnel(Simulator):
         self,
         theta_dim: int = 5,
         obs_dim: Tuple[int, int, int] = (3, 64, 64),
-        data_path: str = "data/light_tunnel",
+        data_dir: str = "/home/pruhlman/data/ropefm",  # Base data directory
         exp_name: str = "uniform_ap_1.8_iso_500.0_ss_0.005",
         model_config: Dict[str, Any] = {"": {}},
     ):
@@ -28,14 +33,15 @@ class LightTunnel(Simulator):
         model_config["params"]["image_size"] = obs_dim[1]  # Ensure image size matches model config
         super().__init__(obs_dim=obs_dim, theta_dim=theta_dim, name="light_tunnel")
         self.image_size = obs_dim[1]
-        self.data_path = data_path
+        # Construct data path from data_dir and task name
+        self.data_path = str(Path(data_dir) / "light_tunnel")
         self.exp_name = exp_name
         self.callable_simulator = True
         self.callable_dgp = False
         self.supported_generation = ["independent"]
 
         # Download data
-        Path("data/light_tunnel").mkdir(parents=True, exist_ok=True)
+        Path(self.data_path).mkdir(parents=True, exist_ok=True)
         self.dataset = causalchamber.datasets.Dataset(
             "lt_camera_v1", root=self.data_path, download=True
         )
@@ -75,6 +81,10 @@ class LightTunnel(Simulator):
             if model_builder is None:
                 raise ValueError(f"Model {model_config['name']} not found in lt module.")
             self.model = model_builder(**model_config["params"])
+        print(f"Successfully initialized LightTunnel simulator with model {model_config['name']}.")
+        print(
+            f"Total number of images in experiment '{self.exp_name}': {len(self.experiment.as_pandas_dataframe())}"
+        )
 
     def get_simulator(self, misspecified: bool):
         def simulator(theta: torch.Tensor) -> torch.Tensor:
@@ -117,31 +127,69 @@ class LightTunnel(Simulator):
 
         return simulator
 
-    def obs_from_files(self, n: int) -> Tuple[torch.Tensor, torch.Tensor]:
+    def get_total_observations(self) -> int:
+        """Get total number of observations available in dataset."""
+        return len(self.experiment.as_pandas_dataframe())
+
+    def obs_from_files(
+        self, n: int, mode: str = "training", indices: Optional[Tuple[int, ...]] = None
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Load observations from files.
+
         Args:
-            n: Number of samples to generate
+            n: Number of samples to load
+            mode: "training" or "testing" (deprecated, use indices instead)
+            indices: Explicit indices to load. If provided, mode is ignored.
+                    Should be a tuple/array of integer indices into the dataset.
+
         Returns:
-            Tensor of observations
+            Tuple of (thetas, images) tensors
         """
-        images = self.experiment.as_image_array(str(self.image_size))[:n]
-        df = self.experiment.as_pandas_dataframe()[:n]
-        thetas = self.experiment.as_pandas_dataframe()[
+        total_obs = len(self.experiment.as_pandas_dataframe())
+
+        if n > total_obs:
+            raise ValueError(f"Requested {n} samples but only {total_obs} available.")
+
+        if indices is not None:
+            # Use explicit indices
+            if len(indices) != n:
+                raise ValueError(f"indices length ({len(indices)}) must match n ({n})")
+            selected_indices = np.array(indices)
+        else:
+            # Fallback to old behavior (not recommended - use DataSplitter instead)
+            import warnings
+            warnings.warn(
+                "obs_from_files called without explicit indices. "
+                "Use DataSplitter for reproducible train/test splits.",
+                DeprecationWarning,
+            )
+            # Default: use sequential indices starting from 0
+            selected_indices = np.arange(n)
+
+        # Load images and thetas at selected indices
+        all_images = self.experiment.as_image_array(str(self.image_size))
+        images = all_images[selected_indices]
+
+        all_thetas = self.experiment.as_pandas_dataframe()[
             ["red", "green", "blue", "pol_1", "pol_2"]
-        ].values[:n]
+        ].values
+        thetas = all_thetas[selected_indices]
         thetas = np.asarray(thetas)
-        # rescale to [0, 1]
+
+        # Rescale images to [0, 1]
         images = images / 255.0
-        # convert to float32
         images = images.astype("float32")
-        # convert to torch tensor
-        images = torch.from_numpy(images).permute(0, 3, 1, 2)  # (N, C, H, W)
+        # Convert to torch tensor (N, C, H, W)
+        images = torch.from_numpy(images).permute(0, 3, 1, 2)
+
+        # Handle ModelRope_F1 theta transformation
         if isinstance(self.model, ModelRope_F1):
-            alphas = np.cos(np.deg2rad(df["pol_1"] - df["pol_2"])) ** 2
+            alphas = np.cos(np.deg2rad(thetas[:, 3] - thetas[:, 4])) ** 2
             alphas = np.asarray(alphas)
             thetas = np.concatenate([thetas[:, :3], alphas[:, np.newaxis]], axis=1)
-        thetas = torch.from_numpy(thetas).float()  # Convert to torch tensor and float32
+
+        thetas = torch.from_numpy(thetas).float()
         return thetas, images
 
 

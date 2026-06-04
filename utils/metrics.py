@@ -1,4 +1,3 @@
-import math
 import random
 from typing import Callable, Dict, Optional, Union
 
@@ -6,6 +5,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from sbi.diagnostics.lc2st import LC2ST
 from sklearn.model_selection import KFold, StratifiedKFold, cross_val_score
 from sklearn.neural_network import MLPClassifier
 from torch import Tensor
@@ -24,6 +24,54 @@ _MODEL_REGISTRY = {
     "mlp_small": SmallMLP,
     "linear": LinearClassifier,
 }
+
+
+
+def compute_lc2st(
+    estimator,
+    x_tilde,
+    ntraj,
+    n_train_cal_lc2st,
+    y_o,
+    idx,
+    theta_cal_train,
+    y_cal,
+):
+    """
+    Computes the lc2st value for a given set of inputs.
+
+    Args:
+        estimators (dict): Dictionary containing the "npe" estimator.
+        x_tilde (Tensor): Input tensor.
+        ntraj (int): Stride to index the input tensor.
+        n_train_cal_lc2st (int): Number of training samples for calibration.
+        y_o (Tensor): Observation tensor.
+        idx (int): Index to select specific data.
+        theta_cal_train (Tensor): Calibration training tensor.
+        y_cal (Tensor): Calibration data tensor.
+
+    Returns:
+        float: lc2st value.
+    """
+    # Generate training predictions
+    preds_train = estimator.flow(x_tilde[::ntraj][:n_train_cal_lc2st]).sample()
+
+    # Extract observation at index
+    xs_star = y_o[idx]
+
+    # Generate posterior samples
+    post_samples_star_fmcpe = estimator.flow(x_tilde[::ntraj][idx]).sample((200,))
+
+    # Compute lc2st
+    _, l_c2st_val = lc2st(
+        theta_cal_train.to("cpu"),
+        y_cal.to("cpu"),
+        preds_train.to("cpu"),
+        xs_star.to("cpu"),
+        post_samples_star_fmcpe.to("cpu"),
+    )
+
+    return l_c2st_val
 
 
 def classifier_two_samples_test(
@@ -179,6 +227,91 @@ def MMD(x, y, kernel):
     return torch.mean(XX + YY - 2.0 * XY)
 
 
+def lc2st(
+    theta_cal: Tensor,
+    y_cal: Tensor,
+    preds_fmcpe: Tensor,
+    xs_star: Tensor,
+    post_samples_star_fmcpe: Tensor,
+):
+    lc2st_fmcpe = LC2ST(
+        thetas=theta_cal,
+        xs=y_cal,
+        posterior_samples=preds_fmcpe,
+        classifier="mlp",
+        num_ensemble=1,
+    )
+    _ = lc2st_fmcpe.train_under_null_hypothesis()  # over 100 trials under (H0)
+    _ = lc2st_fmcpe.train_on_observed_data()  # on observed data
+
+    conf = 0.05
+    p_value_fmcpe_list = []
+    reject_fmcpe_list = []
+    for i in tqdm(range(len(xs_star)), desc="LC2ST on test set"):
+        # Compute LC2ST scores for FMCPE
+        probs_fmcpe, scores_fmcpe = lc2st_fmcpe.get_scores(
+            theta_o=post_samples_star_fmcpe[i, :],
+            x_o=xs_star[i],
+            return_probs=True,
+            trained_clfs=lc2st_fmcpe.trained_clfs,
+        )
+        p_value_fmcpe = lc2st_fmcpe.p_value(post_samples_star_fmcpe[i], xs_star[i])
+        reject_fmcpe = lc2st_fmcpe.reject_test(post_samples_star_fmcpe[i], xs_star[i], alpha=conf)
+        p_value_fmcpe_list.append(p_value_fmcpe)
+        reject_fmcpe_list.append(reject_fmcpe)
+
+    p_value_fmcpe_mean = np.mean(p_value_fmcpe_list)
+    reject_fmcpe_mean = np.mean(reject_fmcpe_list)
+    return (
+        p_value_fmcpe_mean,
+        reject_fmcpe_mean,
+    )
+
+
+def acauc_rope(true_thetas, theta_pred):
+    """
+    Compute the Average Coverage AUC (ACAUC) metric using sbi's Posterior.
+    """
+    m = theta_pred.shape[0]
+    cred_levels = []
+    N = len(true_thetas)
+    for i, true_theta in enumerate(true_thetas):
+        samples = theta_pred[:, i, :].squeeze(1)  # shape (m, D)
+        sorted_samples, _ = torch.sort(samples, dim=0)
+        ranks = (sorted_samples <= true_theta[None, :]).sum(dim=0) / m
+        cred_levels.append(ranks)
+    cred_levels = torch.cat(cred_levels, dim=0)  # shape (N, D)
+    sorted_cred_levels, _ = torch.sort(cred_levels, dim=0)  # shape (N, D)
+    calibration = sorted_cred_levels - torch.linspace(0, 1, N)[:, None]
+    return torch.mean(calibration)
+
+
+def acauc(true_thetas, posterior_samples):
+    """Compute ACAUC as defined in Appendix J of the RoPE paper.
+
+    For each (observation, dimension) pair, computes the empirical CDF rank
+    of the true parameter under the posterior samples, then derives the
+    minimum credible level that would include it.
+
+    ACAUC = mean over all (i, j) of (|2*rank - 1| - 0.5)
+
+    Args:
+        true_thetas: torch.Tensor of shape (N, D)
+            True parameter values.
+        posterior_samples: torch.Tensor of shape (M, N, D)
+            Posterior samples (M per observation per dimension).
+
+    Returns:
+        ACAUC scalar (float). 0 = perfect calibration,
+        >0 = overconfident, <0 = underconfident.
+    """
+    # ranks: fraction of samples <= true value, shape (N, D)
+    ranks = (posterior_samples <= true_thetas.unsqueeze(0)).float().mean(dim=0)
+    # Minimum credible level containing the true value
+    c = torch.abs(2 * ranks - 1)
+    return (c - 0.5).mean().item()
+
+
 def mse(theta_true: torch.Tensor, theta_pred: torch.Tensor) -> float:
     """
     Compute average MSE between predicted samples and true parameters.
@@ -246,7 +379,7 @@ def classifier_two_samples_test_torch(
     batch_size = int(training_kwargs.get("batch_size", 128))
     lr = float(training_kwargs.get("lr", 1e-3))
     weight_decay = float(training_kwargs.get("weight_decay", 0.0))
-    verbose = bool(training_kwargs.get("verbose", True))
+    verbose = bool(training_kwargs.get("verbose", False))
     device = training_kwargs.get("device", None)
     if device is None:
         device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -254,7 +387,7 @@ def classifier_two_samples_test_torch(
     torch.manual_seed(seed)
     np.random.seed(seed)
     random.seed(seed)
-    if device.startswith("cuda"):
+    if device == "cuda":
         torch.cuda.manual_seed_all(seed)
 
     # --- Preprocessing ---
@@ -329,7 +462,7 @@ def classifier_two_samples_test_torch(
 
         # --- train ---
         net.train()
-        tbar = tqdm(range(epochs), desc=f"Fold {fold_idx} Training")
+        tbar = tqdm(range(epochs), desc=f"Fold {fold_idx} Training", disable=not verbose)
         for epoch in tbar:
             epoch_loss = 0.0
             for xb, yb in train_loader:
