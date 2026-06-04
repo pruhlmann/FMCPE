@@ -1,10 +1,6 @@
-# RoPE-FM
+# FMCPE
 
-Flow matching and neural posterior estimation for **misspecified** simulation-based
-inference (SBI). The repository implements a calibration approach that learns a
-post-hoc transform on top of a pre-trained posterior estimator, together with a
-benchmark suite comparing it against several baselines across a range of inference
-tasks.
+Code from the paper "Flow Matching for Robust Simulation-Based Inference under Model Misspecification" (https://arxiv.org/abs/2509.23385).
 
 ## Setup
 
