@@ -124,3 +124,17 @@ pixi run typecheck   # basedpyright
 ## License
 
 MIT — see [LICENSE](LICENSE).
+
+## Reference
+
+```bibtex
+@misc{ruhlmann2026flowmatchingcalibrationsimulationbased,
+      title={Flow Matching Calibration for Simulation-Based Inference under Model Misspecification}, 
+      author={Pierre-Louis Ruhlmann and Michael Arbel and Florence Forbes and Pedro L. C. Rodrigues},
+      year={2026},
+      eprint={2509.23385},
+      archivePrefix={arXiv},
+      primaryClass={stat.ML},
+      url={https://arxiv.org/abs/2509.23385}, 
+}
+```
