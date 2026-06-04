@@ -208,10 +208,10 @@ To add your own task you have to :
 If you use this code in your research, please cite:
 
 ```bibtex
-@misc{ruhlmann2025flowmatchingrobustsimulationbased,
-      title={Flow Matching for Robust Simulation-Based Inference under Model Misspecification}, 
-      author={Pierre-Louis Ruhlmann and Pedro L. C. Rodrigues and Michael Arbel and Florence Forbes},
-      year={2025},
+@misc{ruhlmann2026flowmatchingcalibrationsimulationbased,
+      title={Flow Matching Calibration for Simulation-Based Inference under Model Misspecification}, 
+      author={Pierre-Louis Ruhlmann and Michael Arbel and Florence Forbes and Pedro L. C. Rodrigues},
+      year={2026},
       eprint={2509.23385},
       archivePrefix={arXiv},
       primaryClass={stat.ML},
